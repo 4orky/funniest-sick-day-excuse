@@ -1,133 +1,137 @@
-"""Choose the strongest sick-day excuse and write it out.
+#!/usr/bin/env python3
+"""Pick the funniest one-line sick-day excuse for the make.fun bounty.
 
-Six one-line excuses were drafted for the brief and graded on five
-craft marks: how believable the reason sounds, how fresh the idea
-is, how late the twist lands, how much it sounds like a real text
-to a manager, and how little it wastes. The highest total wins and
-a tie goes to the shorter line, so the outcome never depends on
-ordering or chance. The winner goes to /output/entry.txt and to
-standard output, byte for byte the same on every run.
+A shortlist of hand-written excuses is scored on five craft axes:
+whether a manager could half believe it, whether the image feels
+new, whether the joke lands late, whether it reads like a genuine
+message to a boss, and whether every word earns its keep. The
+top scorer is written to the entry file and printed; ties break
+toward the shorter line, so the result is fully deterministic.
 """
 
-from hashlib import sha256
-from pathlib import Path
+import hashlib
+import os
+import sys
 
-CEILING = 199
-OUT_DIR = "/output"
-ENTRY_NAME = "entry.txt"
-EXPECTED_HEX = "f5460444d13186f3ce83cd18bd6dd0f1d0e7cce674cac19068206f0f11748b7f"
+CHAR_LIMIT = 199
+ENTRY_PATH = "/output/entry.txt"
+EXIT_OK = 0
+WINNER_DIGEST = "f5460444d13186f3ce83cd18bd6dd0f1d0e7cce674cac19068206f0f11748b7f"
 
-ENTRIES = [
+# The winning line, split into fragments so the wording stays exact
+# while the source layout is free to change.
+WINNER_BITS = (
+    "My dentist pulled a tooth yesterday ",
+    "and now my cheek looks like a hamster storing nuts for winter, ",
+    "so I'm staying home until my face matches my ID photo again.",
+)
+WINNER = "".join(WINNER_BITS)
+
+# Each draft carries five scores in the order: believable, original,
+# late punch, true voice, economical. The winner must outscore the rest.
+DRAFTS = [
+    {"line": WINNER, "scores": (5, 5, 5, 5, 4)},
     {
-        # A pulled tooth is a real same-day reason; the hamster image
-        # is new, and the ID-photo closer lands a second laugh last.
-        "text": "My dentist pulled a tooth yesterday and now my cheek looks like a hamster storing nuts for winter, so I'm staying home until my face matches my ID photo again.",
-        "marks": {"believable": 5, "fresh": 5, "twist": 5, "voice": 5, "tight": 4},
+        "line": "I woke up with my jaw swollen shut after the dentist pulled a molar, so today I am on soup and ice packs until I can open my mouth properly again.",
+        "scores": (5, 4, 3, 5, 4),
     },
     {
-        # A throbbing wisdom tooth is believable, but the closer is a
-        # shrug rather than a second laugh, so it grades lower.
-        "text": "My wisdom tooth started throbbing at 3 a.m. and now I can only chew on one side, so I'm taking today to ice it before it starts making decisions for me.",
-        "marks": {"believable": 5, "fresh": 4, "twist": 4, "voice": 5, "tight": 4},
+        "line": "The eye drops the doctor gave me blur everything past arm's length, so I'm staying home until the world comes back into focus.",
+        "scores": (5, 4, 4, 4, 4),
     },
     {
-        # Knock-out cough syrup is a solid reason, yet the spinning
-        # room is a familiar image and the ending trails off.
-        "text": "The pharmacist gave me cough syrup that knocks me out for twelve hours, so I'm calling in today and will answer emails once the room stops spinning.",
-        "marks": {"believable": 5, "fresh": 4, "twist": 3, "voice": 5, "tight": 4},
+        "line": "I sliced my thumb chopping onions and the bandage keeps slipping off, so I'm taking today to stop bleeding on the keyboard.",
+        "scores": (4, 4, 4, 5, 4),
     },
     {
-        # A neck that only turns left is a fresh picture, but the joke
-        # spends its twist early and then explains itself.
-        "text": "I woke up with a stiff neck that only turns left, so I'm staying home today — I can't nod yes to anything until it turns right again.",
-        "marks": {"believable": 4, "fresh": 5, "twist": 4, "voice": 4, "tight": 4},
+        "line": "My back locked up reaching for a cereal box and now I walk like a folding chair, so I'm staying flat until it unfolds.",
+        "scores": (4, 5, 4, 4, 4),
     },
     {
-        # A torn contact lens is believable and visual, though the
-        # spare-pair ending is flat and the voice stays formal.
-        "text": "My contact lens tore this morning and now I'm reading the world through one blurry eye, so I'm taking the day until the spare pair arrives.",
-        "marks": {"believable": 5, "fresh": 4, "twist": 3, "voice": 4, "tight": 4},
-    },
-    {
-        # A stomach complaint at a night market is vivid, but the
-        # peace-treaty closer tries too hard to be clever.
-        "text": "I ate something suspicious at the night market and my stomach has filed a formal complaint, so I need today to negotiate a peace treaty with it.",
-        "marks": {"believable": 4, "fresh": 4, "twist": 4, "voice": 4, "tight": 3},
-    },
-]
+        "line": "The allergy tablets knocked me out cold for fourteen hours and I woke up on the kitchen floor, so I'm calling in until I can stay upright.",
+        "scores": (4, 4, 3, 4, 4),
+    }, ]
 
 
-def total_marks(entry):
-    """Add up one entry's five craft marks."""
-    return sum(entry["marks"].values())
+def add_scores(draft):
+    """Total the five craft scores of one draft."""
+    marks = draft["scores"]
+    if len(marks) != 5:
+        raise ValueError("a draft must carry exactly five scores")
+    return sum(marks)
 
 
-def choose(entries):
-    """Return the text of the highest-graded entry.
+def pick_best(drafts):
+    """Return the line of the best-scoring draft.
 
-    The ranking key puts the mark total first and the length second,
-    so a shorter line only wins when the totals are tied.
+    Ranking is by total first and by brevity second, so a shorter
+    line only wins when the totals match exactly.
     """
-    best_text = None
-    best_rank = None
-    for entry in entries:
-        rank = (total_marks(entry), -len(entry["text"]))
-        if best_rank is None or rank > best_rank:
-            best_rank = rank
-            best_text = entry["text"]
-    if best_text is None:
-        raise ValueError("no entries to choose from")
-    return best_text
+    champion = None
+    champion_key = None
+    for draft in drafts:
+        key = (add_scores(draft), -len(draft["line"]))
+        if champion_key is None or key > champion_key:
+            champion_key = key
+            champion = draft["line"]
+    if champion is None:
+        raise ValueError("draft list came up empty")
+    return champion
 
 
-def gate_ok(text):
-    """Refuse any line the brief would not accept.
+def digest_of(line):
+    """SHA-256 hex digest of a single line, UTF-8 encoded."""
+    return hashlib.sha256(line.encode("utf-8")).hexdigest()
 
-    The gate takes one line of non-blank text between 1 and CEILING
-    characters; anything else is a bug, not an excuse.
+
+def check_line(line):
+    """Reject any line the brief would not accept.
+
+    One non-empty line, no line breaks, no longer than CHAR_LIMIT.
+    Anything failing here is a bug in the shortlist, not an excuse.
     """
-    if not text.strip():
-        raise ValueError("chosen line is blank")
-    if "\n" in text or "\r" in text:
-        raise ValueError("chosen line spans more than one line")
-    if len(text) < 1 or len(text) > CEILING:
-        raise ValueError(f"chosen line is {len(text)} chars, gate is 1..{CEILING}")
-    return True
+    stripped = line.strip()
+    if not stripped:
+        raise ValueError("winning line is empty")
+    if line != stripped:
+        raise ValueError("winning line has stray leading or trailing space")
+    if any(ch in line for ch in ("\n", "\r", "\t")):
+        raise ValueError("winning line contains a line break or a tab")
+    if len(line) > CHAR_LIMIT:
+        raise ValueError("winning line runs %d chars, limit is %d" % (len(line), CHAR_LIMIT))
 
 
-def fingerprint(text):
-    """Return the SHA-256 hex digest of one line."""
-    return sha256(text.encode("utf-8")).hexdigest()
+def save_line(line):
+    """Write the line to the entry file and verify what landed.
 
-
-def publish(text):
-    """Write the line to the entry file and prove it landed.
-
-    The file is written, made world-readable, read back, and hashed
-    again, so the bytes the gate reads are the bytes chosen here.
+    The file is written, made world-readable, read back and hashed
+    again, so the bytes on disk are proven to be the chosen bytes.
     """
-    target = Path(OUT_DIR) / ENTRY_NAME
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text, encoding="utf-8")
-    target.chmod(0o644)
-    back = target.read_text(encoding="utf-8")
-    if back != text:
-        raise ValueError("entry file differs from the chosen line")
-    if fingerprint(back) != EXPECTED_HEX:
-        raise ValueError("entry file hash differs from the recorded value")
-    return target
+    folder = os.path.dirname(ENTRY_PATH)
+    os.makedirs(folder, exist_ok=True)
+    with open(ENTRY_PATH, "w", encoding="utf-8") as handle:
+        handle.write(line)
+    os.chmod(ENTRY_PATH, 0o644)
+    with open(ENTRY_PATH, "r", encoding="utf-8") as handle:
+        stored = handle.read()
+    if stored != line:
+        raise ValueError("entry file content drifted from the chosen line")
+    if digest_of(stored) != WINNER_DIGEST:
+        raise ValueError("entry file digest drifted from the recorded value")
+    return ENTRY_PATH
 
 
-def run():
-    """Pick, check, publish and print the winning excuse."""
-    chosen = choose(ENTRIES)
-    gate_ok(chosen)
-    if fingerprint(chosen) != EXPECTED_HEX:
-        raise ValueError("chosen line hash differs from the recorded value")
-    publish(chosen)
-    print(chosen)
-    return 0
+def entrypoint():
+    """Score the drafts, verify the winner, publish it, print it."""
+    winner = pick_best(DRAFTS)
+    check_line(winner)
+    if digest_of(winner) != WINNER_DIGEST:
+        raise ValueError("chosen line digest drifted from the recorded value")
+    save_line(winner)
+    print(winner)
+    return EXIT_OK
 
 
-# Running this file is the only entry point; importing it stays quiet.
-if __name__ == "__main__": raise SystemExit(run())
+_LAUNCHED_AS_SCRIPT = __name__ == "__main__"
+if _LAUNCHED_AS_SCRIPT:
+    sys.exit(entrypoint())
